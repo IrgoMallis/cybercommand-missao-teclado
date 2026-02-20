@@ -35,6 +35,15 @@ DEFAULT_GITHUB_REPO = "cybercommand-missao-teclado"
 DEFAULT_GITHUB_BRANCH = "master"
 
 
+def sanitize_secret(value: str | None) -> str:
+    if not value:
+        return ""
+    cleaned = value.strip()
+    if cleaned.startswith(("'", '"')) and cleaned.endswith(("'", '"')) and len(cleaned) >= 2:
+        cleaned = cleaned[1:-1].strip()
+    return cleaned
+
+
 @dataclass
 class Mission:
     phase: str
@@ -448,11 +457,14 @@ def github_config_from_secrets() -> Dict | None:
     required = ["GITHUB_TOKEN"]
     try:
         if all(k in st.secrets for k in required):
+            token = sanitize_secret(st.secrets["GITHUB_TOKEN"])
+            if not token:
+                return None
             return {
-                "owner": st.secrets.get("GITHUB_OWNER", DEFAULT_GITHUB_OWNER),
-                "repo": st.secrets.get("GITHUB_REPO", DEFAULT_GITHUB_REPO),
-                "token": st.secrets["GITHUB_TOKEN"],
-                "branch": st.secrets.get("GITHUB_BRANCH", DEFAULT_GITHUB_BRANCH),
+                "owner": sanitize_secret(st.secrets.get("GITHUB_OWNER", DEFAULT_GITHUB_OWNER)) or DEFAULT_GITHUB_OWNER,
+                "repo": sanitize_secret(st.secrets.get("GITHUB_REPO", DEFAULT_GITHUB_REPO)) or DEFAULT_GITHUB_REPO,
+                "token": token,
+                "branch": sanitize_secret(st.secrets.get("GITHUB_BRANCH", DEFAULT_GITHUB_BRANCH)) or DEFAULT_GITHUB_BRANCH,
             }
     except StreamlitSecretNotFoundError:
         return None
@@ -464,12 +476,12 @@ def github_config_auto() -> Dict | None:
     if cfg:
         return cfg
 
-    env_token = os.getenv("GITHUB_TOKEN", "").strip()
+    env_token = sanitize_secret(os.getenv("GITHUB_TOKEN", ""))
     if env_token:
         return {
-            "owner": os.getenv("GITHUB_OWNER", DEFAULT_GITHUB_OWNER),
-            "repo": os.getenv("GITHUB_REPO", DEFAULT_GITHUB_REPO),
-            "branch": os.getenv("GITHUB_BRANCH", DEFAULT_GITHUB_BRANCH),
+            "owner": sanitize_secret(os.getenv("GITHUB_OWNER", DEFAULT_GITHUB_OWNER)) or DEFAULT_GITHUB_OWNER,
+            "repo": sanitize_secret(os.getenv("GITHUB_REPO", DEFAULT_GITHUB_REPO)) or DEFAULT_GITHUB_REPO,
+            "branch": sanitize_secret(os.getenv("GITHUB_BRANCH", DEFAULT_GITHUB_BRANCH)) or DEFAULT_GITHUB_BRANCH,
             "token": env_token,
         }
 
@@ -480,6 +492,7 @@ def github_config_auto() -> Dict | None:
             text=True,
             timeout=5,
         ).strip()
+        token = sanitize_secret(token)
         if token:
             return {
                 "owner": DEFAULT_GITHUB_OWNER,
@@ -497,19 +510,31 @@ def upload_pdf_to_github(pdf_bytes: bytes, filename: str, cfg: Dict) -> str:
     path = f"relatorios-cybercommand/{filename}"
     content = base64.b64encode(pdf_bytes).decode("utf-8")
     url = f"https://api.github.com/repos/{cfg['owner']}/{cfg['repo']}/contents/{path}"
+    payload = {
+        "message": f"docs: adiciona relatorio {filename}",
+        "content": content,
+        "branch": cfg.get("branch", "main"),
+    }
+    common_headers = {
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
+
+    # Tentativa 1: Bearer (funciona para a maioria dos tokens modernos)
     response = requests.put(
         url,
-        headers={
-            "Authorization": f"Bearer {cfg['token']}",
-            "Accept": "application/vnd.github+json",
-        },
-        json={
-            "message": f"docs: adiciona relatorio {filename}",
-            "content": content,
-            "branch": cfg.get("branch", "main"),
-        },
+        headers={**common_headers, "Authorization": f"Bearer {cfg['token']}"},
+        json=payload,
         timeout=30,
     )
+    # Tentativa 2: token (compatibilidade com PAT clássico)
+    if response.status_code == 401:
+        response = requests.put(
+            url,
+            headers={**common_headers, "Authorization": f"token {cfg['token']}"},
+            json=payload,
+            timeout=30,
+        )
     if response.status_code >= 300:
         raise RuntimeError(f"GitHub API {response.status_code}: {response.text}")
     data = response.json()
