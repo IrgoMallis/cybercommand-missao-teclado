@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import base64
 import io
+import os
 import re
+import subprocess
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Dict, List
@@ -27,6 +29,10 @@ DANGEROUS_COMBOS = {
     "Alt+Tab",
     "Win+L",
 }
+
+DEFAULT_GITHUB_OWNER = "IrgoMallis"
+DEFAULT_GITHUB_REPO = "cybercommand-missao-teclado"
+DEFAULT_GITHUB_BRANCH = "master"
 
 
 @dataclass
@@ -439,17 +445,51 @@ def build_report() -> Dict:
 
 
 def github_config_from_secrets() -> Dict | None:
-    required = ["GITHUB_OWNER", "GITHUB_REPO", "GITHUB_TOKEN"]
+    required = ["GITHUB_TOKEN"]
     try:
         if all(k in st.secrets for k in required):
             return {
-                "owner": st.secrets["GITHUB_OWNER"],
-                "repo": st.secrets["GITHUB_REPO"],
+                "owner": st.secrets.get("GITHUB_OWNER", DEFAULT_GITHUB_OWNER),
+                "repo": st.secrets.get("GITHUB_REPO", DEFAULT_GITHUB_REPO),
                 "token": st.secrets["GITHUB_TOKEN"],
-                "branch": st.secrets.get("GITHUB_BRANCH", "main"),
+                "branch": st.secrets.get("GITHUB_BRANCH", DEFAULT_GITHUB_BRANCH),
             }
     except StreamlitSecretNotFoundError:
         return None
+    return None
+
+
+def github_config_auto() -> Dict | None:
+    cfg = github_config_from_secrets()
+    if cfg:
+        return cfg
+
+    env_token = os.getenv("GITHUB_TOKEN", "").strip()
+    if env_token:
+        return {
+            "owner": os.getenv("GITHUB_OWNER", DEFAULT_GITHUB_OWNER),
+            "repo": os.getenv("GITHUB_REPO", DEFAULT_GITHUB_REPO),
+            "branch": os.getenv("GITHUB_BRANCH", DEFAULT_GITHUB_BRANCH),
+            "token": env_token,
+        }
+
+    try:
+        token = subprocess.check_output(
+            ["gh", "auth", "token"],
+            stderr=subprocess.DEVNULL,
+            text=True,
+            timeout=5,
+        ).strip()
+        if token:
+            return {
+                "owner": DEFAULT_GITHUB_OWNER,
+                "repo": DEFAULT_GITHUB_REPO,
+                "branch": DEFAULT_GITHUB_BRANCH,
+                "token": token,
+            }
+    except Exception:
+        return None
+
     return None
 
 
@@ -714,24 +754,6 @@ def render_game() -> None:
         st.write(f"- Jogador {p['id']}: XP {p['xp']} | Acertos {p['hits']} | Precisao {accuracy}%")
 
 
-def render_teacher_sidebar() -> Dict | None:
-    st.sidebar.markdown("## Professor")
-    cfg = github_config_from_secrets()
-    if cfg:
-        st.sidebar.success(f"GitHub via secrets: {cfg['owner']}/{cfg['repo']}")
-        return cfg
-
-    st.sidebar.caption("Opcional: configurar envio para GitHub sem expor para alunos no app principal.")
-    owner = st.sidebar.text_input("GitHub Owner", value=st.session_state.teacher_cfg.get("owner", ""))
-    repo = st.sidebar.text_input("GitHub Repo", value=st.session_state.teacher_cfg.get("repo", ""))
-    branch = st.sidebar.text_input("Branch", value=st.session_state.teacher_cfg.get("branch", "main"))
-    token = st.sidebar.text_input("GitHub Token", type="password", value=st.session_state.teacher_cfg.get("token", ""))
-    if owner and repo and token:
-        st.session_state.teacher_cfg = {"owner": owner, "repo": repo, "branch": branch, "token": token}
-        return st.session_state.teacher_cfg
-    return None
-
-
 def inject_browser_shortcut_guard(expected_combo: str = "", require_combo_before_validate: bool = False) -> None:
     expected_combo_js = expected_combo.replace("\\", "\\\\").replace("'", "\\'")
     require_flag = "true" if require_combo_before_validate else "false"
@@ -877,7 +899,7 @@ def render_end() -> None:
         use_container_width=True,
     )
 
-    cfg = render_teacher_sidebar()
+    cfg = github_config_auto()
     if cfg and not st.session_state.report_auto_sent:
         try:
             auto_url = upload_pdf_to_github(pdf_bytes, filename, cfg)
@@ -895,7 +917,7 @@ def render_end() -> None:
 
     if st.button("Enviar PDF para GitHub", type="primary", use_container_width=True):
         if not cfg:
-            st.error("Configure o GitHub na barra lateral ou via st.secrets.")
+            st.error("GitHub nao configurado no servidor. Defina GITHUB_TOKEN (e opcionalmente owner/repo/branch).")
         else:
             try:
                 url = upload_pdf_to_github(pdf_bytes, filename, cfg)
@@ -926,7 +948,7 @@ def render_end() -> None:
 
 
 def main() -> None:
-    st.set_page_config(page_title="CyberCommand: Missao Teclado", page_icon="⌨️", layout="wide")
+    st.set_page_config(page_title="CyberCommand: Missao Teclado", page_icon="⌨️", layout="wide", initial_sidebar_state="collapsed")
     css()
     init_state()
 
