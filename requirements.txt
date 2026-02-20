@@ -1,0 +1,4 @@
+streamlit
+streamlit-autorefresh
+fpdf2
+requests
